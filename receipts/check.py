@@ -11,6 +11,7 @@ from .fetch import Fetcher
 from .grade import QUOTE_GRADES, Archive, grade_quote, link_state, wayback
 from .pages import Page, read_page
 from .parse import Claim
+from .support import Support, SupportChecker
 
 # When a quote cites several pages, report the least bad result. "unreadable" ranks above "missing":
 # a quote absent from one page may still be on another page we could not read.
@@ -46,6 +47,7 @@ class LinkResult:
 class ClaimResult:
     claim: Claim
     quotes: list[QuoteResult] = field(default_factory=list)
+    support: Support | None = None
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Result:
     checked_at: str
     claims: list[ClaimResult]
     links: dict[str, LinkResult]
+    method: dict = field(default_factory=dict)
 
     def quote_counts(self) -> Counter:
         c = Counter({g: 0 for g in QUOTE_GRADES})
@@ -82,11 +85,38 @@ class Result:
         never = l["gone_none"]
         if never:
             parts.append(f"{never} with no Wayback record")
+        s = self.support_counts()
+        if sum(s.values()):
+            bits = [f"{s[v]} {v.replace('_', ' ')}" for v in SUPPORT_ORDER if s[v]]
+            flagged = sum(1 for r in self.claims if r.support and r.support.flag)
+            parts.append("support: " + ", ".join(bits) + (f" ({flagged} to check by hand)" if flagged else ""))
         return "; ".join(parts) + "."
+
+    def support_counts(self) -> Counter:
+        return Counter(r.support.verdict for r in self.claims if r.support)
+
+
+SUPPORT_ORDER = ("supported", "partly", "not_supported", "not_checked")
+MAX_PAGES_PER_CLAIM = 3
+
+
+def assess_claim(c: Claim, pages: dict[str, Page], support: SupportChecker) -> Support:
+    """Support from the best of the claim's readable pages (at most three)."""
+    readable = [u for u in c.urls if pages[u].readable][:MAX_PAGES_PER_CLAIM]
+    if not readable:
+        return Support(c.urls[0] if c.urls else "", "not_checked", reason="no cited page could be read")
+    best = None
+    for u in readable:
+        s = support.assess(c.text, c.quotes, u, pages[u].text)
+        if best is None or SUPPORT_ORDER.index(s.verdict) < SUPPORT_ORDER.index(best.verdict):
+            best = s
+        if best.verdict == "supported":
+            break
+    return best
 
 
 def check(claims: list[Claim], fetcher: Fetcher, *, source: str = "", workers: int = 8,
-          use_wayback: bool = True) -> Result:
+          use_wayback: bool = True, support: SupportChecker | None = None, progress=None) -> Result:
     urls = sorted({u for c in claims for u in c.urls})
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         pages: dict[str, Page] = dict(zip(urls, pool.map(lambda u: read_page(u, fetcher), urls)))
@@ -114,6 +144,15 @@ def check(claims: list[Claim], fetcher: Fetcher, *, source: str = "", workers: i
                     best = cand
             if best is not None:
                 r.quotes.append(best)
+        if support is not None:
+            r.support = assess_claim(c, pages, support)
+            if progress:
+                progress(len(results) + 1, len(claims))
         results.append(r)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    return Result(source, now, results, links)
+    method = {}
+    if support is not None:
+        method = {"checker": getattr(support.checker, "name", "") if support.checker else "",
+                  "judge": support.judge.name if support.judge else "",
+                  "threshold": support.threshold}
+    return Result(source, now, results, links, method)

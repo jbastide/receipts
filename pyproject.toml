@@ -12,6 +12,14 @@ dependencies = [
 [project.scripts]
 receipts = "receipts.cli:main"
 
+[project.optional-dependencies]
+support = [
+    "safetensors>=0.4",
+    "sentencepiece>=0.2",
+    "torch>=2.4",
+    "transformers>=4.45",
+]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 

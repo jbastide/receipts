@@ -21,8 +21,32 @@ def _stem(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0] or "report"
 
 
+def make_support(a: argparse.Namespace):
+    if not (a.support or a.judge_url):
+        return None
+    from .support import CHECKERS, Judge, SupportChecker
+    checker = None
+    if a.checker != "none":
+        try:
+            checker = CHECKERS[a.checker]()
+        except ImportError:
+            sys.exit("The checker models need the optional extra: uv sync --extra support "
+                     "(or use --checker none with --judge-url)")
+    judge = Judge(a.judge_url, a.judge_model, samples=a.judge_samples,
+                  api_key=os.environ.get("RECEIPTS_JUDGE_KEY", "")) if a.judge_url else None
+    if checker is None and judge is None:
+        sys.exit("--checker none needs --judge-url")
+    return SupportChecker(checker, judge, threshold=a.threshold)
+
+
+def _progress(i: int, n: int):
+    if sys.stderr.isatty():
+        print(f"\r  support: {i}/{n} claims", end="" if i < n else "\n", file=sys.stderr, flush=True)
+
+
 def cmd_check(a: argparse.Namespace) -> int:
     fetcher = Fetcher(a.cache, offline=a.offline, timeout=a.timeout, user_agent=a.user_agent)
+    support = make_support(a)
     fail_on = {g.strip() for g in a.fail_on.split(",") if g.strip()}
     failed = False
     for path in a.reports:
@@ -37,12 +61,13 @@ def cmd_check(a: argparse.Namespace) -> int:
         if not claims:
             print(f"{path}: no claims with links found")
             continue
-        result = check(claims, fetcher, source=path, workers=a.workers, use_wayback=not a.no_wayback)
+        result = check(claims, fetcher, source=path, workers=a.workers, use_wayback=not a.no_wayback,
+                       support=support, progress=_progress)
         out_dir = a.out if len(a.reports) == 1 and a.out else os.path.join(a.out or ".", f"{_stem(path)}-check")
         paths = write_all(result, out_dir, a.cache)
         print(f"{path}: {result.summary()}")
         print(f"  report: {paths['md']}")
-        counts = result.quote_counts() + result.link_counts()
+        counts = result.quote_counts() + result.link_counts() + result.support_counts()
         if any(counts[g] for g in fail_on):
             failed = True
     return 1 if failed else 0
@@ -65,8 +90,21 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--timeout", type=float, default=40.0, help="seconds per request (default: %(default)s)")
     c.add_argument("--user-agent", default=DEFAULT_UA, help="User-Agent header sent with each request")
     c.add_argument("--fail-on", default="",
-                   help="exit with status 1 if any quote or link has one of these comma-separated "
-                        "results, e.g. missing,edited,gone")
+                   help="exit with status 1 if any quote, link or claim has one of these comma-separated "
+                        "results, e.g. missing,edited,gone,not_supported")
+    s = c.add_argument_group("claim support", "does the cited page support each claim? (step 2)")
+    s.add_argument("--support", action="store_true", help="check claim support with a small checker model")
+    s.add_argument("--checker", choices=["minicheck", "hhem", "none"], default="minicheck",
+                   help="checker model (default: %(default)s); needs: uv sync --extra support")
+    s.add_argument("--judge-url", default=os.environ.get("RECEIPTS_JUDGE_URL", ""),
+                   help="OpenAI-compatible endpoint of a local judge model, e.g. http://127.0.0.1:8080/v1 "
+                        "(llama.cpp, Ollama, vLLM, LM Studio); implies --support")
+    s.add_argument("--judge-model", default=os.environ.get("RECEIPTS_JUDGE_MODEL", ""),
+                   help="model name to send to the endpoint, if it serves several")
+    s.add_argument("--judge-samples", type=int, default=1,
+                   help="ask the judge this many times and take the majority (default: %(default)s)")
+    s.add_argument("--threshold", type=float, default=0.5,
+                   help="checker score at or above which a claim counts as supported (default: %(default)s)")
     a = p.parse_args(argv)
     if a.cmd == "check":
         return cmd_check(a)

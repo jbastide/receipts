@@ -9,12 +9,15 @@ cites, keeps a copy of each, and tells you:
   **unreadable** (we couldn't see the page's text);
 - for edited and missing quotes, the nearest passage that *is* on the page;
 - whether each link works, and for dead links, whether the Wayback Machine ever captured them, which
-  separates a page that moved from one that may never have existed.
+  separates a page that moved from one that may never have existed;
+- with `--support`, whether the cited page supports each claim, quoted or not: **supported**,
+  **partly** or **not supported**, with the page sentences the verdict rests on.
 
 It runs on your machine. Nothing is sent anywhere except the requests to the cited pages and, for dead
-links, to the Wayback Machine. No model is used at this step.
+links, to the Wayback Machine. The quote and link checks use no model; the support check uses small
+models that run locally.
 
-Working name. Step 1 of 6 in the design draft (`original-data-tool/DESIGN.md` on the
+Working name. Steps 1 and 2 of 6 in the design draft (`original-data-tool/DESIGN.md` on the
 `original-data-tool` branch of the tools repository).
 
 ## Install and run
@@ -72,10 +75,58 @@ uv run python bench/model_study.py path/to/haiku-vs-sonnet-vs-opus-research-stud
 
 Pages change, so a later run may find some quotes edited or missing.
 
-## What it does not do yet
+## Claim support
 
-It does not judge whether a page *supports* a claim. A quote can be on the page word for word and
-still not back the claim made with it. That is step 2 (a small local checker model plus a judge).
+A quote can be on the page word for word and still not back the claim made with it, and most claims
+in a research report have no quote at all. `--support` checks each claim against the page it cites:
+
+1. **Retrieval.** The page is split into sentences and the ones that best match the claim are picked
+   (BM25, no model).
+2. **Checker model.** A small model scores whether those passages support the claim, from 0 to 1:
+   [MiniCheck-Flan-T5-Large](https://huggingface.co/lytang/MiniCheck-Flan-T5-Large) (770M, MIT) by
+   default, or [HHEM-2.1-Open](https://huggingface.co/vectara/hallucination_evaluation_model)
+   (flan-t5-base, Apache-2.0) with `--checker hhem`. Both run on a laptop CPU or GPU. HHEM's weights
+   are loaded directly at a pinned revision, so none of its repository's code is run. A leading
+   attribution ("Google's help page says …") is removed before scoring, because these models otherwise
+   mark a claim down when the page doesn't name itself.
+3. **Judge (optional).** A local chat model behind any OpenAI-compatible endpoint (llama.cpp,
+   Ollama, vLLM, LM Studio) reads the numbered page sentences and answers supported, partly or not
+   supported, naming the sentence numbers it relied on. It never writes a quotation; the report shows
+   those sentences as they are on the page. Output is constrained to a JSON schema and validated;
+   a malformed answer is retried once. `--judge-samples 3` takes a majority and flags split votes.
+
+With both, the judge's verdict is reported and the claim is flagged for a person when the two
+disagree.
+
+```
+uv sync --extra support                       # torch, transformers: about 2 GB
+uv run receipts check report.md --support                         # checker model only
+uv run receipts check report.md --judge-url http://127.0.0.1:8080/v1   # checker model + judge
+uv run receipts check report.md --checker none --judge-url http://127.0.0.1:11434/v1 --judge-model gemma3:12b
+```
+
+The first run downloads the checker model from Hugging Face (MiniCheck about 3 GB, HHEM about 1 GB).
+
+### How well it works
+
+On 340 planted cases built from the model study's graded claims (`bench/results/planted/`), on a
+16 GB MacBook Air:
+
+| Method | Good claims passed | Damaged claims caught | Seconds per claim |
+| --- | --- | --- | --- |
+| MiniCheck alone | 80% | 90% | 0.7 |
+| HHEM alone | 82% | 81% (misses most negations) | 0.2 |
+| Gemma 4 12B judge alone | 90% | 94% | 9.9 |
+| MiniCheck and the judge, as the report uses them | 74% clean, 17% check by hand | 90% flagged, 7% check by hand, 3% missed | 10.6 |
+
+The checker model alone is fast enough for a whole report in seconds but flags one good claim in five.
+Add a judge when you want the report to be usable as is.
+
+## What it does not do
+
+- Support verdicts are a reason to look, not a ruling. The models read the sentences that best match
+  the claim; a claim drawn from another part of the page can be marked unsupported.
+- Quoted phrases under five words are not graded as quotes.
 
 ## Tests
 

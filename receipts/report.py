@@ -9,11 +9,19 @@ from dataclasses import asdict
 from .check import LinkResult, Result
 from .text import squash
 
+NO_SUPPORT = """- It does not judge whether a page supports a claim (run with --support for that). A quote can be on
+  the page word for word and still not back the claim made with it, and claims without quotes are only
+  checked for a working link.
+"""
+
+WITH_SUPPORT = """- Support verdicts come from small models reading the sentences of the page that best match the
+  claim. They are a reason to look, not a ruling: read the evidence sentences, and the page, before
+  deciding. A claim drawn from a part of the page the search did not pick up can be marked unsupported.
+"""
+
 LIMITS = """## What this check does not do
 
-- It does not judge whether a page supports a claim. A quote can be on the page word for word and
-  still not back the claim made with it, and claims without quotes are only checked for a working link.
-- A page that changed after the report was written can make a correct quote look missing. The saved
+{support}- A page that changed after the report was written can make a correct quote look missing. The saved
   copy (see Pages read) is what this check saw.
 - "No Wayback capture" does not prove a link was invented: the Wayback Machine doesn't have every page.
 - Quoted phrases under five words are not checked; they are usually terms, not quotations.
@@ -49,7 +57,7 @@ def _archive(l: LinkResult) -> str:
 
 def markdown(r: Result, cache_dir: str = "") -> str:
     out = [f"# Receipts check: {os.path.basename(r.source) or 'report'}", "",
-           f"Checked {r.checked_at.replace('T', ' ').replace('+00:00', '')} UTC.", "",
+           f"Checked {r.checked_at.replace('T', ' ').replace('+00:00', '')} UTC." + _method(r), "",
            f"**{r.summary()}**", ""]
 
     bad = [(c, q) for c in r.claims for q in c.quotes if q.grade in ("missing", "edited")]
@@ -71,6 +79,8 @@ def markdown(r: Result, cache_dir: str = "") -> str:
                 out.append(f"- Note: {c.claim.note}")
             out.append("")
 
+    out += _support_sections(r)
+
     unread = [(c, q) for c in r.claims for q in c.quotes if q.grade == "unreadable"]
     if unread:
         out += ["## Quotes that could not be checked", "",
@@ -89,11 +99,16 @@ def markdown(r: Result, cache_dir: str = "") -> str:
             out.append(f"| {_cell(l.url, 100)} | {_cell(_link_what(l))} | {_cell(_archive(l))} |")
         out.append("")
 
-    out += ["## Every claim", "", "| # | Claim | Quote | Link |", "| --- | --- | --- | --- |"]
+    has_support = any(c.support for c in r.claims)
+    head = "| # | Claim | Quote | Link |" + (" Support |" if has_support else "")
+    out += ["## Every claim", "", head, "| --- " * head.count(" |") + "|"]
     for c in r.claims:
         grades = ", ".join(q.grade for q in c.quotes) or "no quote"
         states = ", ".join(f"{r.links[u].state} ({r.links[u].host})" for u in c.claim.urls)
-        out.append(f"| {c.claim.id} | {_cell(c.claim.text, 140)} | {grades} | {_cell(states, 120)} |")
+        row = f"| {c.claim.id} | {_cell(c.claim.text, 140)} | {grades} | {_cell(states, 120)} |"
+        if has_support:
+            row += f" {_support_cell(c.support)} |"
+        out.append(row)
     out.append("")
 
     out += ["## Pages read", ""]
@@ -105,19 +120,82 @@ def markdown(r: Result, cache_dir: str = "") -> str:
         status = f"{l.status or '-'}" + (" (Arctic Shift archive)" if l.via == "arctic-shift" else "")
         out.append(f"| {_cell(l.url, 100)} | {status} | {l.fetched_at.replace('+00:00', '')} | "
                    f"{l.sha256[:16] or '-'} |")
-    out += ["", LIMITS]
+    out += ["", LIMITS.format(support=WITH_SUPPORT if has_support else NO_SUPPORT)]
     return "\n".join(out)
 
 
+def _method(r: Result) -> str:
+    m = r.method
+    if not m:
+        return ""
+    parts = [p for p in (m.get("checker") and f"checker model {m['checker']}",
+                         m.get("judge") and f"judge {m['judge'].removeprefix('judge:')}") if p]
+    return " Support checked by " + " and ".join(parts) + "." if parts else ""
+
+
+def _support_cell(s) -> str:
+    if s is None:
+        return ""
+    label = s.verdict.replace("_", " ")
+    if s.checker_score is not None:
+        label += f" ({s.checker_score:.2f})"
+    return label + (" ⚑" if s.flag else "")
+
+
+def _support_sections(r: Result) -> list[str]:
+    out = []
+    weak = [c for c in r.claims if c.support and c.support.verdict in ("not_supported", "partly")]
+    weak.sort(key=lambda c: (c.support.verdict != "not_supported", c.support.checker_score or 0))
+    if weak:
+        out += ["## Claims the cited page doesn't support", ""]
+        for c in weak:
+            s = c.support
+            out += [f"### {c.claim.id}: {s.verdict.replace('_', ' ')}" + (f" (line {c.claim.line})" if c.claim.line else ""), "",
+                    f"- **Claim:** {squash(c.claim.text, 500)}",
+                    f"- **Cited page:** <{s.url}>"]
+            out += _support_detail(s)
+            out.append("")
+    flagged = [c for c in r.claims if c.support and c.support.flag and c.support.verdict not in ("not_supported", "partly")]
+    if flagged:
+        out += ["## Check by hand", "", "The two models disagree on these, or the judge was unsure.", ""]
+        for c in flagged:
+            out += [f"### {c.claim.id}: {c.support.verdict.replace('_', ' ')}", "",
+                    f"- **Claim:** {squash(c.claim.text, 500)}", f"- **Cited page:** <{c.support.url}>"]
+            out += _support_detail(c.support)
+            out.append("")
+    return out
+
+
+def _support_detail(s) -> list[str]:
+    out = []
+    if s.reason:
+        out.append(f"- **Why:** {squash(s.reason, 300)}")
+    opinions = []
+    if s.judge_verdict:
+        opinions.append(f"judge: {s.judge_verdict.replace('_', ' ')}")
+    if s.checker_score is not None:
+        opinions.append(f"checker model: {s.checker_score:.2f} (0 = no support, 1 = support)")
+    if opinions:
+        out.append("- **Opinions:** " + "; ".join(opinions))
+    if s.flag:
+        out.append(f"- **Look closer:** {s.flag}")
+    if s.evidence:
+        out.append("- **Closest sentences on the page:**")
+        out += [f"  - “{squash(e, 400)}”" for e in s.evidence]
+    return out
+
+
 def as_dict(r: Result) -> dict:
-    return {"source": r.source, "checked_at": r.checked_at, "summary": r.summary(),
+    return {"source": r.source, "checked_at": r.checked_at, "summary": r.summary(), "method": r.method,
             "quote_counts": dict(r.quote_counts()), "link_counts": dict(r.link_counts()),
-            "claims": [{**asdict(c.claim), "quotes": [asdict(q) for q in c.quotes]} for c in r.claims],
+            "claims": [{**asdict(c.claim), "quotes": [asdict(q) for q in c.quotes],
+                        "support": asdict(c.support) if c.support else None} for c in r.claims],
             "links": {u: asdict(l) for u, l in r.links.items()}}
 
 
 CSV_FIELDS = ["claim_id", "line", "claim", "quote", "quote_grade", "shingle_share", "url",
-              "link_state", "status", "wayback", "first_capture", "note"]
+              "link_state", "status", "wayback", "first_capture", "support", "checker_score",
+              "judge_verdict", "support_flag", "support_url", "note"]
 
 
 def rows(r: Result) -> list[dict]:
@@ -133,6 +211,11 @@ def rows(r: Result) -> list[dict]:
                         "link_state": l.state if l else "", "status": l.status if l else "",
                         "wayback": l.archive.state if l and l.archive else "",
                         "first_capture": l.archive.first_capture if l and l.archive else "",
+                        "support": c.support.verdict if c.support else "",
+                        "checker_score": "" if not c.support or c.support.checker_score is None else c.support.checker_score,
+                        "judge_verdict": c.support.judge_verdict if c.support else "",
+                        "support_flag": c.support.flag if c.support else "",
+                        "support_url": c.support.url if c.support else "",
                         "note": c.claim.note})
     return out
 
