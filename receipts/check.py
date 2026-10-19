@@ -101,18 +101,11 @@ MAX_PAGES_PER_CLAIM = 3
 
 
 def assess_claim(c: Claim, pages: dict[str, Page], support: SupportChecker) -> Support:
-    """Support from the best of the claim's readable pages (at most three)."""
+    """Support from the claim's readable pages (at most three), read together."""
     readable = [u for u in c.urls if pages[u].readable][:MAX_PAGES_PER_CLAIM]
     if not readable:
         return Support(c.urls[0] if c.urls else "", "not_checked", reason="no cited page could be read")
-    best = None
-    for u in readable:
-        s = support.assess(c.text, c.quotes, u, pages[u].text)
-        if best is None or SUPPORT_ORDER.index(s.verdict) < SUPPORT_ORDER.index(best.verdict):
-            best = s
-        if best.verdict == "supported":
-            break
-    return best
+    return support.assess_pages(c.text, c.quotes, [(u, pages[u].text) for u in readable])
 
 
 def check(claims: list[Claim], fetcher: Fetcher, *, source: str = "", workers: int = 8,

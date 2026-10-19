@@ -15,6 +15,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+MIN_CLAIM_WORDS = 3         # a shorter "sentence" is a fragment left by splitting
 MIN_QUOTE_WORDS = 5         # shorter quoted phrases are usually terms or scare quotes, not quotations
 
 
@@ -142,12 +143,20 @@ def _segments(lines: list[str], skip: set[int]) -> list[tuple[int, str, bool]]:
     return segs
 
 
+def _depth(s: str) -> int:
+    """How many brackets and parentheses are open at the end of `s`."""
+    return max(0, s.count("(") - s.count(")")) + max(0, s.count("[") - s.count("]"))
+
+
 def _sentences(seg: str) -> list[str]:
-    """Split after . ! or ? (and any citation markers that follow) when a new sentence starts."""
+    """Split after . ! or ? (and any citation markers that follow) when a new sentence starts,
+    never inside parentheses or brackets ("(Smith et al. 2024)", "[Hou et al., ECIR 2024](…)")."""
     out, last = [], 0
     for m in re.finditer(r"[.!?][\"”’)]*((?:\s*\[[^\]\s]{1,12}\])*)(?:\s+(?=[A-Z0-9\"“‘(\[*_])|\s*$)", seg):
         word = re.search(r"([\w.]+)[.!?][\"”’)]*$", seg[last:m.start() + 1])
         if word and (word.group(1).lower().rstrip(".") in _ABBREV or len(word.group(1)) == 1):
+            continue
+        if _depth(seg[:m.start()]):
             continue
         cut = m.end(1) if m.group(1) else m.start() + 1
         out.append(seg[last:cut].strip())
@@ -209,7 +218,12 @@ def _quotes(s: str, refs: dict[str, str]) -> list[tuple[str, list[str]]]:
 
 def _clauses(s: str, refs: dict[str, str]) -> list[str]:
     """Split a sentence at semicolons when more than one part cites its own source."""
-    parts = re.split(r";\s+", s)
+    parts, last = [], 0
+    for m in re.finditer(r";\s+", s):                 # only semicolons outside parentheses and brackets
+        if not _depth(s[:m.start()]):
+            parts.append(s[last:m.start()])
+            last = m.end()
+    parts.append(s[last:])
     if sum(1 for p in parts if _cites_at(p, refs)) < 2:
         return [s]
     out, buf = [], []
@@ -252,7 +266,8 @@ def parse_markdown(text: str) -> list[Claim]:
                 claims.append(Claim("", f"(block quote) {quote[:200]}", urls, [quote], [urls], line,
                                     note="" if _citations(seg, refs) else "link taken from the nearby paragraph"))
             continue
-        sents = [c for s in _sentences(seg) for c in _clauses(s, refs)]
+        is_row = " | " in seg                           # a table row is one claim: its cells belong together
+        sents = [seg] if is_row else [c for s in _sentences(seg) for c in _clauses(s, refs)]
         cites = [_citations(s, refs) for s in sents]
         for j, s in enumerate(sents):
             urls, quoted, note = cites[j], _quotes(s, refs), ""
@@ -261,9 +276,14 @@ def parse_markdown(text: str) -> list[Claim]:
                 if nearby:
                     urls, note = nearby[0], "link taken from the same paragraph"
                     quoted = [(q, urls) for q, _ in quoted]
-            if urls:
-                claims.append(Claim("", _plain(s), urls, [q for q, _ in quoted],
-                                    [u for _, u in quoted], line, note))
+            if not urls:
+                continue
+            text = _plain(s)
+            if len(text.split()) < MIN_CLAIM_WORDS and claims and claims[-1].line == line:
+                prev = claims[-1]                     # a fragment: its links belong to the claim before
+                prev.urls += [u for u in urls if u not in prev.urls]
+                continue
+            claims.append(Claim("", text, urls, [q for q, _ in quoted], [u for _, u in quoted], line, note))
         prev_urls = next((c for c in cites[::-1] if c), prev_urls)
     for i, c in enumerate(claims, 1):
         c.id = f"c{i}"

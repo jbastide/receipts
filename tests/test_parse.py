@@ -149,3 +149,19 @@ def test_a_quote_is_tried_against_the_link_after_it_first():
           'other cues" ([B](https://example.org/b)) in most runs.')
     [c] = parse_report(md)
     assert c.quote_urls == [["https://example.org/b", "https://example.org/a"]]
+
+
+def test_no_splits_inside_parentheses_or_brackets():
+    md = ("Estimates range from 14% in one study ([A](https://example.org/a); [Graphite](https://example.org/g); "
+          "[Cloro](https://example.org/c)). Rankers favor popular items ([Hou et al., ECIR 2024](https://example.org/h)), "
+          "and other data agree; a later test found the same ([B](https://example.org/b)).")
+    cs = parse_report(md)
+    assert [c.urls for c in cs] == [["https://example.org/a", "https://example.org/g", "https://example.org/c"],
+                                    ["https://example.org/h"], ["https://example.org/b"]]
+    assert all(len(c.text.split()) >= 3 for c in cs)
+
+
+def test_a_table_row_is_one_claim():
+    md = "| Popularity bias | Rankers favor popular items. [Hou et al.](https://example.org/h) |\n"
+    [c] = parse_report(md)
+    assert c.urls == ["https://example.org/h"] and "Popularity bias" in c.text

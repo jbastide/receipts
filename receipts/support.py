@@ -17,6 +17,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 import httpx
 
@@ -206,6 +207,12 @@ not_supported: the sentences do not show the claim's main assertion, or they con
 
 Answer in JSON with three fields: "reason" (one short sentence), "evidence" (the numbers of up to five sentences that show what the claim asserts; empty if none), and "verdict" (supported, partly or not_supported)."""
 
+# Used instead of the first two sentences of JUDGE_SYSTEM when a claim cites several pages; the
+# single-page wording is kept exactly as benchmarked in bench/results/planted.
+JUDGE_MULTI = ("You check whether the pages a claim cites support it. You are shown numbered sentences "
+               "taken from those pages; each sentence says which website it is from, and the claim may "
+               "draw different facts from different pages.")
+
 JUDGE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -236,8 +243,12 @@ class Judge:
 
     def _ask(self, claim: str, numbered: list[tuple[int, str]], temperature: float) -> JudgeAnswer | None:
         page = "\n".join(f"[{n}] {s}" for n, s in numbered)
+        system = JUDGE_SYSTEM
+        if any(s.startswith("(from ") for _, s in numbered):
+            first = "You check whether a web page supports a claim. You are shown numbered sentences taken from the page."
+            system = JUDGE_MULTI + JUDGE_SYSTEM[len(first):]
         body = {"model": self.model or "default", "temperature": temperature, "max_tokens": 400,
-                "messages": [{"role": "system", "content": JUDGE_SYSTEM},
+                "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": f"CLAIM:\n{claim}\n\nPAGE SENTENCES:\n{page}"}],
                 "response_format": {"type": "json_schema",
                                     "json_schema": {"name": "verdict", "strict": True, "schema": JUDGE_SCHEMA}},
@@ -294,35 +305,60 @@ class SupportChecker:
         self.checker, self.judge, self.threshold = checker, judge, threshold
 
     def assess(self, claim: str, quotes: list[str], url: str, page_text: str) -> Support:
-        sents = page_sentences(page_text)
-        if not claim.strip() or not sents:
-            return Support(url, "not_checked", reason="no claim text" if sents else "no page text")
-        ranked = rank_sentences(sents, claim + " " + " ".join(quotes), k=8)
-        if not ranked:
-            return Support(url, "not_supported", checker_score=None, reason="no sentence on the page shares a word with the claim")
+        return self.assess_pages(claim, quotes, [(url, page_text)])
 
-        score, best_window = None, None
+    def assess_pages(self, claim: str, quotes: list[str], pages: list[tuple[str, str]]) -> Support:
+        """Judge a claim against all of its cited pages together.
+
+        A claim that cites several sources usually draws one fact from each, so no single page backs
+        all of it. The judge sees the best-matching sentences of every page, labelled by website.
+        """
+        first = pages[0][0] if pages else ""
+        if not claim.strip():
+            return Support(first, "not_checked", reason="no claim text")
+        query = claim + " " + " ".join(quotes)
+        found = []                                       # (url, sentences, ranked indices)
+        for url, text in pages:
+            sents = page_sentences(text)
+            if sents:
+                found.append((url, sents, rank_sentences(sents, query, k=8)))
+        if not found:
+            return Support(first, "not_checked", reason="no page text")
+        if not any(r for _, _, r in found):
+            return Support(first, "not_supported", reason="no sentence on the page shares a word with the claim")
+
+        score, best = None, None
         if self.checker is not None:
-            wins = windows(sents, ranked[:3])
+            pairs, where = [], []
             bare = strip_attribution(claim)
-            scores = self.checker.score([(" ".join(sents[a:b]), bare) for a, b in wins])
+            for url, sents, ranked in found:
+                for a, b in windows(sents, ranked[:3]):
+                    pairs.append((" ".join(sents[a:b]), bare))
+                    where.append((url, sents, ranked, a, b))
+            scores = self.checker.score(pairs)
             k = max(range(len(scores)), key=scores.__getitem__)
-            score, best_window = round(scores[k], 3), wins[k]
+            score, best = round(scores[k], 3), where[k]
 
-        answer = None
+        answer, numbered, source_of = None, [], {}
         if self.judge is not None:
-            idx = context(sents, ranked)
-            answer = self.judge.judge(claim, [(i + 1, sents[i]) for i in idx])
+            budget = 900 if len(found) == 1 else max(400, 1500 // len(found))
+            for url, sents, ranked in found:
+                label = f"(from {urlparse(url).netloc}) " if len(found) > 1 else ""
+                for i in context(sents, ranked, max_words=budget):
+                    n = len(numbered) + 1
+                    numbered.append((n, label + sents[i]))
+                    source_of[n] = (url, sents[i])
+            answer = self.judge.judge(claim, numbered)
 
         if answer is not None:
-            verdict = answer.verdict
-            evidence = [sents[n - 1] for n in answer.evidence]
-            reason = answer.reason
+            verdict, reason = answer.verdict, answer.reason
+            evidence = [source_of[n][1] for n in answer.evidence]
+            url = source_of[answer.evidence[0]][0] if answer.evidence else (best[0] if best else first)
         elif self.judge is not None and self.checker is None:
-            return Support(url, "not_checked", reason="the judge gave no usable answer")
+            return Support(first, "not_checked", reason="the judge gave no usable answer")
         else:
             verdict = "supported" if score >= self.threshold else "not_supported"
-            a, b = best_window
+            url, sents, ranked, a, b = best
             evidence = [sents[i] for i in ranked if a <= i < b][:2]
             reason = f"checker score {score}"
 

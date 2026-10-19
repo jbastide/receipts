@@ -122,6 +122,14 @@ On 340 planted cases built from the model study's graded claims (`bench/results/
 The checker model alone is fast enough for a whole report in seconds but flags one good claim in five.
 Add a judge when you want the report to be usable as is.
 
+On a real report the picture is rougher. A 112-claim research synthesis (prose and comparison tables,
+most claims carrying several figures) came back, with MiniCheck and the Gemma judge, as 43 supported,
+60 partly, 7 not supported and 2 not checked, in about 20 minutes. "Partly" there mostly means the claim
+packs three to six specifics and the judge was shown sentences for only some of them. When a claim
+cites several pages, the judge reads sentences from all of them together, labelled by website (that
+moved 11 of 50 multi-source claims from partly to supported). Splitting dense claims into single facts
+before judging is the next improvement.
+
 ## What it does not do
 
 - Support verdicts are a reason to look, not a ruling. The models read the sentences that best match

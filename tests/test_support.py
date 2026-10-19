@@ -153,3 +153,13 @@ def test_cli_with_judge_only(tmp_path, web, monkeypatch):
 def test_checker_none_without_judge_is_refused():
     with pytest.raises(SystemExit):
         cli.main(["check", "x.md", "--support", "--checker", "none"])
+
+
+def test_a_claim_citing_two_pages_is_judged_on_both():
+    other = "Unrelated text about gardening and compost. " * 3 + "Callers can ask for a copy of the recording by email."
+    j, seen = fake_judge([{"reason": "both", "evidence": [1, 4], "verdict": "supported"}])
+    s = SupportChecker(None, j).assess_pages("Recordings are kept 30 days and callers can ask for a copy.", [],
+                                             [("https://a.example/x", PAGE), ("https://b.example/y", other)])
+    shown = seen[0]["messages"][1]["content"]
+    assert "(from a.example)" in shown and "(from b.example)" in shown
+    assert s.verdict == "supported" and len(s.evidence) == 2
