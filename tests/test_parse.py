@@ -165,3 +165,12 @@ def test_a_table_row_is_one_claim():
     md = "| Popularity bias | Rankers favor popular items. [Hou et al.](https://example.org/h) |\n"
     [c] = parse_report(md)
     assert c.urls == ["https://example.org/h"] and "Popularity bias" in c.text
+
+
+def test_table_cells_carry_their_column_headers():
+    md = """| Lever | Evidence | Risk |
+|---|---|---|
+| Reviews | +0.1 star lifts picks [S](https://example.org/s) | Low |
+"""
+    [c] = parse_report(md)
+    assert c.text.startswith("Lever: Reviews | Evidence: +0.1 star lifts picks") and "Risk: Low" in c.text

@@ -124,11 +124,31 @@ Add a judge when you want the report to be usable as is.
 
 On a real report the picture is rougher. A 112-claim research synthesis (prose and comparison tables,
 most claims carrying several figures) came back, with MiniCheck and the Gemma judge, as 43 supported,
-60 partly, 7 not supported and 2 not checked, in about 20 minutes. "Partly" there mostly means the claim
-packs three to six specifics and the judge was shown sentences for only some of them. When a claim
-cites several pages, the judge reads sentences from all of them together, labelled by website (that
-moved 11 of 50 multi-source claims from partly to supported). Splitting dense claims into single facts
-before judging is the next improvement.
+60 partly, 7 not supported and 2 not checked, in about 20 minutes. "Partly" there mostly meant the claim
+packs three to six specifics and the judge could confirm only some of them, without saying which. When
+a claim cites several pages, the judge reads sentences from all of them together, labelled by website
+(that moved 11 of 50 multi-source claims from partly to supported).
+
+### Dense claims are split into facts
+
+With a judge, a claim of 35 words or more, with three figures or more, or from a table row, is first
+split into single facts by the same local model, and each fact is judged on its own. Code checks every
+fact before it is used: its figures must all be in the claim and nearly all its words, so the model
+cannot add anything, and figures in the claim that no fact covers are flagged. Table cells carry their
+column header ("Risk: Low"), and the model is told to leave out the report's own labels, ratings and
+row names, which no source would state. The report lists each fact with ✓, ◐ or ✗ and the closest
+sentence. `--no-split` turns it off.
+
+On the same synthesis, 91 of 112 claims were split into 430 facts: 207 supported, 61 partly, 162 not
+supported. Claim-level verdicts became 27 supported, 76 partly, 7 not supported, 2 not checked: more
+"partly", because one weak fact now marks the claim, but each now names the fact. A sample of the
+unsupported facts held real discrepancies (a ratio given as 38,000:1 where the page says 48,000:1 and
+549:1; −0.405 where the page has 40.5%), the report author's own reasoning (a formula, "no study of X
+was found"), and figures the sentence search may not have shown the judge. On the planted set
+splitting changes nothing measurable (94% caught either way; `bench/results/planted/`).
+
+On a Mac, the checker model runs on the CPU when a judge is used: sharing Apple's GPU with llama.cpp
+crashed PyTorch twice. `--checker-device` overrides it.
 
 ## What it does not do
 

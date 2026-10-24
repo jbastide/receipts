@@ -107,6 +107,7 @@ def _segments(lines: list[str], skip: set[int]) -> list[tuple[int, str, bool]]:
     """Paragraphs, list items, table rows and block quotes: (first line number, text, is_blockquote)."""
     segs, buf, start, bq = [], [], 0, False
     fence = False
+    header: list[str] = []
 
     def flush():
         nonlocal buf
@@ -130,9 +131,18 @@ def _segments(lines: list[str], skip: set[int]) -> list[tuple[int, str, bool]]:
         text = re.sub(r"^\s*>\s?", "", line) if is_bq else line
         if line.lstrip().startswith("|"):
             flush()
-            if not re.fullmatch(r"[\s|:-]+", line):
-                segs.append((i + 1, line.strip().strip("|"), False))
+            if re.fullmatch(r"[\s|:-]+", line):
+                continue
+            cells = [c.strip() for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))]
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if re.fullmatch(r"\s*\|?[\s|:-]+\|?\s*", nxt) and "-" in nxt:
+                header = [re.sub(r"[*_`]", "", c) for c in cells]      # the row above the |---| line
+                continue
+            if header and len(header) == len(cells):
+                cells = [f"{h}: {c}" if h else c for h, c in zip(header, cells) if c]
+            segs.append((i + 1, " | ".join(c for c in cells if c), False))
             continue
+        header = header if line.lstrip().startswith("|") else []
         new_item = bool(_LIST_ITEM.match(text))
         if buf and (is_bq != bq or new_item):
             flush()

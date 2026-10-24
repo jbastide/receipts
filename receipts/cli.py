@@ -28,7 +28,10 @@ def make_support(a: argparse.Namespace):
     checker = None
     if a.checker != "none":
         try:
-            checker = CHECKERS[a.checker]()
+            device = a.checker_device
+            if device == "auto" and a.judge_url and sys.platform == "darwin":
+                device = "cpu"                          # see support._device
+            checker = CHECKERS[a.checker](device=device)
         except ImportError:
             sys.exit("The checker models need the optional extra: uv sync --extra support "
                      "(or use --checker none with --judge-url)")
@@ -36,7 +39,7 @@ def make_support(a: argparse.Namespace):
                   api_key=os.environ.get("RECEIPTS_JUDGE_KEY", "")) if a.judge_url else None
     if checker is None and judge is None:
         sys.exit("--checker none needs --judge-url")
-    return SupportChecker(checker, judge, threshold=a.threshold)
+    return SupportChecker(checker, judge, threshold=a.threshold, split=not a.no_split)
 
 
 def _progress(i: int, n: int):
@@ -96,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--support", action="store_true", help="check claim support with a small checker model")
     s.add_argument("--checker", choices=["minicheck", "hhem", "none"], default="minicheck",
                    help="checker model (default: %(default)s); needs: uv sync --extra support")
+    s.add_argument("--checker-device", default="auto", choices=["auto", "cpu", "mps", "cuda"],
+                   help="where the checker model runs (default: auto; on a Mac, the CPU when a judge is used)")
     s.add_argument("--judge-url", default=os.environ.get("RECEIPTS_JUDGE_URL", ""),
                    help="OpenAI-compatible endpoint of a local judge model, e.g. http://127.0.0.1:8080/v1 "
                         "(llama.cpp, Ollama, vLLM, LM Studio); implies --support")
@@ -103,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="model name to send to the endpoint, if it serves several")
     s.add_argument("--judge-samples", type=int, default=1,
                    help="ask the judge this many times and take the majority (default: %(default)s)")
+    s.add_argument("--no-split", action="store_true",
+                   help="judge long or many-figure claims whole instead of splitting them into single facts "
+                        "(splitting needs --judge-url)")
     s.add_argument("--threshold", type=float, default=0.5,
                    help="checker score at or above which a claim counts as supported (default: %(default)s)")
     a = p.parse_args(argv)

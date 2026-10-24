@@ -137,6 +137,9 @@ def _support_cell(s) -> str:
     if s is None:
         return ""
     label = s.verdict.replace("_", " ")
+    if s.facts:
+        ok = sum(1 for f in s.facts if f["verdict"] == "supported")
+        return label + f" ({ok} of {len(s.facts)} facts)" + (" ⚑" if s.flag else "")
     if s.checker_score is not None:
         label += f" ({s.checker_score:.2f})"
     return label + (" ⚑" if s.flag else "")
@@ -179,6 +182,16 @@ def _support_detail(s) -> list[str]:
         out.append("- **Opinions:** " + "; ".join(opinions))
     if s.flag:
         out.append(f"- **Look closer:** {s.flag}")
+    if s.facts:
+        out.append("- **The claim's facts, checked one by one:**")
+        for i, f in enumerate(s.facts, 1):
+            mark = {"supported": "✓", "partly": "◐", "not_supported": "✗"}.get(f["verdict"], "?")
+            out.append(f"  {i}. {mark} {squash(f['text'], 300)} ({f['verdict'].replace('_', ' ')})")
+            if f["verdict"] != "supported" and f.get("reason"):
+                out.append(f"     - {squash(f['reason'], 250)}")
+            if f.get("evidence"):
+                out.append(f"     - closest on the page: “{squash(f['evidence'][0], 300)}”")
+        return out
     if s.evidence:
         out.append("- **Closest sentences on the page:**")
         out += [f"  - “{squash(e, 400)}”" for e in s.evidence]
@@ -195,7 +208,7 @@ def as_dict(r: Result) -> dict:
 
 CSV_FIELDS = ["claim_id", "line", "claim", "quote", "quote_grade", "shingle_share", "url",
               "link_state", "status", "wayback", "first_capture", "support", "checker_score",
-              "judge_verdict", "support_flag", "support_url", "note"]
+              "judge_verdict", "facts_supported", "support_flag", "support_url", "note"]
 
 
 def rows(r: Result) -> list[dict]:
@@ -214,6 +227,8 @@ def rows(r: Result) -> list[dict]:
                         "support": c.support.verdict if c.support else "",
                         "checker_score": "" if not c.support or c.support.checker_score is None else c.support.checker_score,
                         "judge_verdict": c.support.judge_verdict if c.support else "",
+                        "facts_supported": (f"{sum(1 for f in c.support.facts if f['verdict'] == 'supported')}"
+                                            f"/{len(c.support.facts)}") if c.support and c.support.facts else "",
                         "support_flag": c.support.flag if c.support else "",
                         "support_url": c.support.url if c.support else "",
                         "note": c.claim.note})

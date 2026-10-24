@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 from receipts.fetch import Fetcher
 from receipts.pages import read_page
-from receipts.support import CHECKERS, Judge, SupportChecker
+from receipts.support import CHECKERS, Judge, SupportChecker, is_dense
 
 KINDS = ("original", "number", "negation", "swap", "overclaim")
 EXTRAS = ["according to a 2019 survey of 4,000 law firms",
@@ -107,7 +107,8 @@ def build_cases(study, fetcher, n, seed=7, min_numbers=40):
     return cases
 
 
-def run_method(name, checker, cases, fetcher, path):
+def run_method(name, checker, cases, fetcher, path, reuse=None):
+    """`reuse`: earlier results for this judge, copied for claims that would not be split."""
     done = {}
     if os.path.exists(path):
         for line in open(path, encoding="utf-8"):
@@ -117,10 +118,16 @@ def run_method(name, checker, cases, fetcher, path):
         for c in cases:
             if c["id"] in done:
                 continue
+            if reuse and c["id"] in reuse and not is_dense(c["claim"]):
+                d = dict(reuse[c["id"]], reused=True)
+                fh.write(json.dumps(d) + "\n")
+                done[c["id"]] = d
+                continue
             t = time.time()
             s = checker.assess(c["claim"], [], c["url"], read_page(c["url"], fetcher).text)
             d = {"id": c["id"], "verdict": s.verdict, "score": s.checker_score, "judge": s.judge_verdict,
-                 "evidence": s.evidence[:2], "reason": s.reason, "seconds": round(time.time() - t, 2)}
+                 "evidence": s.evidence[:2], "reason": s.reason, "seconds": round(time.time() - t, 2),
+                 "facts": [{"text": f["text"], "verdict": f["verdict"]} for f in s.facts]}
             fh.write(json.dumps(d) + "\n")
             fh.flush()
             done[c["id"]] = d
@@ -174,6 +181,8 @@ def main():
     ap.add_argument("--methods", default="minicheck,hhem")
     ap.add_argument("--judge-url", default="")
     ap.add_argument("--judge-model", default="")
+    ap.add_argument("--no-split", action="store_true", help="judge every claim whole")
+    ap.add_argument("--reuse", default="", help="earlier judge scores (no split) to copy for claims too short to split")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     fetcher = Fetcher(a.cache, offline=True)
@@ -190,10 +199,13 @@ def main():
     for m in names:
         run_method(m, SupportChecker(CHECKERS[m]()), cases, fetcher, os.path.join(a.out, f"scores-{m}.jsonl"))
     if a.judge_url:
-        jname = "judge-" + (a.judge_model or "local")
+        jname = "judge-" + (a.judge_model or "local") + ("" if a.no_split else "-split")
         names.append(jname)
-        run_method(jname, SupportChecker(None, Judge(a.judge_url, a.judge_model)), cases, fetcher,
-                   os.path.join(a.out, f"scores-{jname}.jsonl"))
+        reuse = None
+        if a.reuse:
+            reuse = {json.loads(l)["id"]: json.loads(l) for l in open(a.reuse, encoding="utf-8")}
+        run_method(jname, SupportChecker(None, Judge(a.judge_url, a.judge_model), split=not a.no_split),
+                   cases, fetcher, os.path.join(a.out, f"scores-{jname}.jsonl"), reuse)
 
     results = {}
     for f in sorted(os.listdir(a.out)):

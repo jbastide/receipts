@@ -128,9 +128,13 @@ def context(sents: list[str], ranked: list[int], max_words: int = 900) -> list[i
 
 # ---- checkers --------------------------------------------------------------------------------
 
-def _device():
+def _device(choice: str = "auto"):
+    """'auto' picks CUDA, then Apple's GPU, then the CPU. On Apple silicon the checker and a llama.cpp
+    judge sharing the GPU has crashed PyTorch, so the CLI passes 'cpu' when a judge is in use."""
     import torch
-    return "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+    if choice != "auto":
+        return choice
+    return "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 
 
 class MiniCheck:
@@ -138,10 +142,10 @@ class MiniCheck:
     name = "minicheck-flan-t5-large"
     repo, revision = "lytang/MiniCheck-Flan-T5-Large", "main"
 
-    def __init__(self, batch_size: int = 4):
+    def __init__(self, batch_size: int = 4, device: str = "auto"):
         import torch
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        self.torch, self.batch_size, self.device = torch, batch_size, _device()
+        self.torch, self.batch_size, self.device = torch, batch_size, _device(device)
         self.tok = AutoTokenizer.from_pretrained(self.repo, revision=self.revision)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(self.repo, revision=self.revision).to(self.device).eval()
 
@@ -165,12 +169,12 @@ class HHEM:
     base = "google/flan-t5-base"
     prompt = "<pad> Determine if the hypothesis is true given the premise?\n\nPremise: {p}\n\nHypothesis: {c}"
 
-    def __init__(self, batch_size: int = 8):
+    def __init__(self, batch_size: int = 8, device: str = "auto"):
         import torch
         from huggingface_hub import hf_hub_download
         from safetensors.torch import load_file
         from transformers import AutoConfig, AutoTokenizer, T5ForTokenClassification
-        self.torch, self.batch_size, self.device = torch, batch_size, _device()
+        self.torch, self.batch_size, self.device = torch, batch_size, _device(device)
         cfg = AutoConfig.from_pretrained(self.base)
         cfg.num_labels = 2
         model = T5ForTokenClassification(cfg)
@@ -270,6 +274,27 @@ class Judge:
                 continue
         return None
 
+    def decompose(self, claim: str) -> list[str] | None:
+        body = {"model": self.model or "default", "temperature": 0.0, "max_tokens": 700,
+                "messages": [{"role": "system", "content": SPLIT_SYSTEM},
+                             {"role": "user", "content": f"CLAIM:\n{claim}"}],
+                "response_format": {"type": "json_schema",
+                                    "json_schema": {"name": "facts", "strict": True, "schema": SPLIT_SCHEMA}},
+                "chat_template_kwargs": {"enable_thinking": False}}
+        for _ in range(2):
+            try:
+                r = self.client.post(self.url, json=body)
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"].get("content") or ""
+                m = re.search(r"\{.*\}", text, re.S)
+                facts = json.loads(m.group(0) if m else text).get("facts", [])
+                facts = [str(f).strip() for f in facts if str(f).strip()][:8]
+                if facts:
+                    return facts
+            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+                continue
+        return None
+
     def judge(self, claim: str, numbered: list[tuple[int, str]]) -> JudgeAnswer | None:
         if self.samples == 1:
             return self._ask(claim, numbered, 0.0)
@@ -285,6 +310,70 @@ class Judge:
         return pick
 
 
+# ---- splitting dense claims ------------------------------------------------------------------------
+
+SPLIT_SYSTEM = """You split a claim from a research report into the separate facts it states, so that each fact can be checked against the sources the claim cites.
+
+Rules:
+- One fact per item, written as a short sentence that stands on its own: repeat the subject instead of writing "it" or "they".
+- Use only words and figures that are in the claim. Add nothing, and keep every number, date and qualifier with the fact it belongs to.
+- Keep a list together: "the model parses intent, budget and dislikes" is one fact, not three.
+- Leave out the report's own framing that no source would state: its stage, section or row names, what it calls things, and its labels, verdicts and ratings such as evidence strength, risk level or a status column ("Documented", "Inferred", "Measured", "High", "Low"). Leave out the names of the sources cited.
+- If the claim states only one fact, return it as the only item.
+- Usually two to five items; never more than eight.
+
+Answer in JSON: {"facts": ["...", "..."]}"""
+
+SPLIT_SCHEMA = {
+    "type": "object",
+    "properties": {"facts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8}},
+    "required": ["facts"],
+}
+
+DENSE_WORDS = 35        # a claim this long, with three figures or more, or from a table row, is split
+DENSE_NUMBERS = 3
+_ARXIV = re.compile(r"\b\d{4}\.\d{4,5}(?:v\d+)?\b")
+_FIGURE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def numbers(s: str) -> set[str]:
+    """The figures in `s`, without thousands separators; arXiv ids are not figures."""
+    s = _ARXIV.sub(" ", s)
+    return {m.group().replace(",", "") for m in _FIGURE.finditer(s)}
+
+
+def is_dense(claim: str) -> bool:
+    return " | " in claim or len(claim.split()) >= DENSE_WORDS or len(numbers(claim)) >= DENSE_NUMBERS
+
+
+def fact_from_claim(fact: str, claim: str, min_share: float = 0.8) -> bool:
+    """True when a split-off fact adds nothing: its figures all come from the claim, and nearly all its words."""
+    terms = {_stem(t) for t in _terms(fact)}
+    if not terms or not numbers(fact) <= numbers(claim):
+        return False
+    return len(terms & {_stem(t) for t in _terms(claim)}) / len(terms) >= min_share
+
+
+def _stem(w: str) -> str:
+    """Crude plural folding, enough that 'drivers' matches 'driver' and 'brands' matches 'brand'."""
+    for end in ("ies", "es", "s"):
+        if len(w) > len(end) + 2 and w.endswith(end):
+            return w[: -len(end)] + ("y" if end == "ies" else "")
+    return w
+
+
+def split_claim(claim: str, judge: "Judge") -> tuple[list[str], list[str]]:
+    """Facts a dense claim states, checked against the claim, and the claim's figures no fact covers."""
+    facts = [f for f in (judge.decompose(claim) or []) if fact_from_claim(f, claim)]
+    facts = list(dict.fromkeys(facts))
+    if len(facts) < 2:
+        return [], []
+    covered = set().union(*(numbers(f) for f in facts))
+    body = claim.split(" | ", 1)[1] if " | " in claim else claim     # a table row's label cell holds no figures to check
+    left_out = sorted(numbers(body) - covered, key=lambda n: claim.find(n))
+    return facts, left_out
+
+
 # ---- putting it together -------------------------------------------------------------------------
 
 @dataclass
@@ -296,18 +385,57 @@ class Support:
     evidence: list[str] = field(default_factory=list)
     reason: str = ""
     flag: str = ""                  # why a person should look
+    facts: list[dict] = field(default_factory=list)    # when a dense claim was split: one entry per fact
+    left_out: list[str] = field(default_factory=list)  # figures in the claim that no split-off fact covers
 
 
 class SupportChecker:
-    def __init__(self, checker=None, judge: Judge | None = None, threshold: float = 0.5):
+    def __init__(self, checker=None, judge: Judge | None = None, threshold: float = 0.5, split: bool = True):
         if checker is None and judge is None:
             raise ValueError("support needs a checker, a judge, or both")
         self.checker, self.judge, self.threshold = checker, judge, threshold
+        self.split = split and judge is not None
 
     def assess(self, claim: str, quotes: list[str], url: str, page_text: str) -> Support:
         return self.assess_pages(claim, quotes, [(url, page_text)])
 
     def assess_pages(self, claim: str, quotes: list[str], pages: list[tuple[str, str]]) -> Support:
+        """A dense claim is split into single facts, each judged on its own; otherwise judged whole."""
+        if self.split and is_dense(claim):
+            facts, left_out = split_claim(claim, self.judge)
+            if facts:
+                return self._combine([(f, self._assess_one(f, [], pages)) for f in facts], left_out, pages)
+        return self._assess_one(claim, quotes, pages)
+
+    def _combine(self, parts: list[tuple[str, Support]], left_out: list[str], pages) -> Support:
+        checked = [(f, s) for f, s in parts if s.verdict != "not_checked"]
+        verdicts = {s.verdict for _, s in checked}
+        if not checked:
+            verdict = "not_checked"
+        elif verdicts == {"supported"}:
+            verdict = "supported"
+        elif verdicts == {"not_supported"}:
+            verdict = "not_supported"
+        else:
+            verdict = "partly"
+        n_ok = sum(1 for _, s in checked if s.verdict == "supported")
+        weak = [f for f, s in checked if s.verdict != "supported"]
+        reason = f"{n_ok} of {len(parts)} facts supported" + (f"; not shown: {weak[0]}" if weak else "")
+        scores = [s.checker_score for _, s in parts if s.checker_score is not None]
+        flags = [f"fact {i}: {s.flag}" for i, (_, s) in enumerate(parts, 1) if s.flag]
+        if left_out:
+            flags.insert(0, "figures in the claim that no checked fact covers: " + ", ".join(left_out))
+        evidence = [s.evidence[0] for _, s in parts if s.verdict == "supported" and s.evidence][:4]
+        first = next((s.url for _, s in parts if s.verdict == "supported"), parts[0][1].url)
+        judged = {s.judge_verdict for _, s in parts if s.judge_verdict}
+        return Support(first, verdict, min(scores) if scores else None,
+                       verdict if judged else "", evidence, reason, "; ".join(flags),
+                       facts=[{"text": f, "verdict": s.verdict, "checker_score": s.checker_score,
+                               "judge_verdict": s.judge_verdict, "evidence": s.evidence, "reason": s.reason,
+                               "url": s.url, "flag": s.flag} for f, s in parts],
+                       left_out=left_out)
+
+    def _assess_one(self, claim: str, quotes: list[str], pages: list[tuple[str, str]]) -> Support:
         """Judge a claim against all of its cited pages together.
 
         A claim that cites several sources usually draws one fact from each, so no single page backs
@@ -327,7 +455,7 @@ class SupportChecker:
         if not any(r for _, _, r in found):
             return Support(first, "not_supported", reason="no sentence on the page shares a word with the claim")
 
-        score, best = None, None
+        score, best, checker_error = None, None, ""
         if self.checker is not None:
             pairs, where = [], []
             bare = strip_attribution(claim)
@@ -335,9 +463,14 @@ class SupportChecker:
                 for a, b in windows(sents, ranked[:3]):
                     pairs.append((" ".join(sents[a:b]), bare))
                     where.append((url, sents, ranked, a, b))
-            scores = self.checker.score(pairs)
-            k = max(range(len(scores)), key=scores.__getitem__)
-            score, best = round(scores[k], 3), where[k]
+            try:
+                scores = self.checker.score(pairs)
+            except Exception as e:                     # a device error on one claim must not end the run
+                checker_error = f"the checker model failed ({type(e).__name__})"
+                scores = []
+            if scores:
+                k = max(range(len(scores)), key=scores.__getitem__)
+                score, best = round(scores[k], 3), where[k]
 
         answer, numbered, source_of = None, [], {}
         if self.judge is not None:
@@ -354,8 +487,9 @@ class SupportChecker:
             verdict, reason = answer.verdict, answer.reason
             evidence = [source_of[n][1] for n in answer.evidence]
             url = source_of[answer.evidence[0]][0] if answer.evidence else (best[0] if best else first)
-        elif self.judge is not None and self.checker is None:
-            return Support(first, "not_checked", reason="the judge gave no usable answer")
+        elif best is None:
+            return Support(first, "not_checked", reason=checker_error or "the judge gave no usable answer",
+                           flag=checker_error)
         else:
             verdict = "supported" if score >= self.threshold else "not_supported"
             url, sents, ranked, a, b = best
@@ -372,4 +506,6 @@ class SupportChecker:
             flag = flag or "the judge's samples disagreed"
         if self.judge is not None and answer is None:
             flag = "the judge gave no usable answer; verdict from the checker model"
+        if checker_error:
+            flag = (flag + "; " if flag else "") + checker_error
         return Support(url, verdict, score, answer.verdict if answer else "", evidence, reason, flag)

@@ -21,6 +21,20 @@ temperature 0, JSON-schema output, reasoning off.
 | MiniCheck or judge flags it | 78 of 105 (74%) | 37 of 40 (92%) | 33 of 35 (94%) | 79 of 80 (99%) | 80 of 80 (100%) | 229 of 235 (97%) | 10.6 |
 | HHEM or judge flags it | 82 of 105 (78%) | 36 of 40 (90%) | 30 of 35 (86%) | 80 of 80 (100%) | 80 of 80 (100%) | 226 of 235 (96%) | 10.1 |
 
+## With dense claims split into facts (October 24, 2026)
+
+The 59 cases long enough or figure-heavy enough to be split (36 of them overclaims) were judged again
+fact by fact (`--reuse` copies the earlier judge results for the other 298):
+
+| Method | Originals passed | Caught: number | Caught: negation | Caught: swap | Caught: overclaim | Caught: all defects | Seconds per claim |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Judge, whole claims | 94 of 105 (90%) | 35 of 40 (88%) | 29 of 35 (83%) | 79 of 80 (99%) | 79 of 80 (99%) | 222 of 235 (94%) | 9.9 |
+| Judge, dense claims split | 92 of 105 (88%) | 34 of 40 (85%) | 30 of 35 (86%) | 79 of 80 (99%) | 78 of 80 (98%) | 221 of 235 (94%) | 12.7 |
+
+No real difference here: each planted defect is one fact, which the whole-claim judge already finds.
+Splitting is for real reports, where a claim carries several figures and the reader needs to know
+which one fails.
+
 ## How the report sorts claims
 
 With `--judge-url` and the default checker, the report shows the judge's verdict and puts a claim under

@@ -163,3 +163,63 @@ def test_a_claim_citing_two_pages_is_judged_on_both():
     shown = seen[0]["messages"][1]["content"]
     assert "(from a.example)" in shown and "(from b.example)" in shown
     assert s.verdict == "supported" and len(s.evidence) == 2
+
+
+# ---- splitting dense claims ----------------------------------------------------------------------
+
+DENSE = ("Recordings are kept for 30 days and can be played back by the account owner, legal categories "
+         "keep them for 60 days, and callers hear a message before the call, according to 3 help pages "
+         "(arXiv 2609.05059).")
+
+
+def test_figures_density_and_fact_validation():
+    assert sup.numbers("50.7% of 4,000 firms (arXiv 2609.05059v2)") == {"50.7", "4000"}
+    assert sup.is_dense(DENSE) and sup.is_dense("A | B") and not sup.is_dense("Recordings are kept 30 days.")
+    assert sup.fact_from_claim("Legal categories keep recordings for 60 days.", DENSE)
+    assert not sup.fact_from_claim("Legal categories keep recordings for 90 days.", DENSE)      # new figure
+    assert not sup.fact_from_claim("Google sells recordings to insurers.", DENSE)              # new words
+
+
+def test_a_dense_claim_is_judged_fact_by_fact():
+    j, seen = fake_judge([
+        {"facts": ["Recordings are kept for 30 days.", "Legal categories keep recordings for 60 days.",
+                   "Google sells recordings to insurers for 5 dollars."]},          # invented: dropped
+        {"reason": "says 30 days", "evidence": [2], "verdict": "supported"},
+        {"reason": "no such sentence", "evidence": [], "verdict": "not_supported"},
+    ])
+    s = SupportChecker(None, j).assess(DENSE, [], "https://a.example/x", PAGE)
+    assert [f["verdict"] for f in s.facts] == ["supported", "not_supported"]
+    assert s.verdict == "partly" and s.reason.startswith("1 of 2 facts supported")
+    assert s.left_out == ["3"] and "no checked fact covers: 3" in s.flag
+    assert "split a claim" in seen[0]["messages"][0]["content"]
+
+
+def test_all_facts_supported_is_supported_and_a_failed_split_judges_whole():
+    j, _ = fake_judge([{"facts": ["Recordings are kept for 30 days.", "Legal categories keep recordings for 60 days.",
+                                  "Callers hear a message before the call."]},
+                       *[{"reason": "r", "evidence": [1], "verdict": "supported"}] * 3])
+    s = SupportChecker(None, j).assess(DENSE, [], "u", PAGE)
+    assert s.verdict == "supported" and len(s.facts) == 3
+    j, _ = fake_judge(["no json", "still none", {"reason": "whole", "evidence": [2], "verdict": "partly"}])
+    s = SupportChecker(None, j).assess(DENSE, [], "u", PAGE)
+    assert s.facts == [] and s.verdict == "partly" and s.reason == "whole"
+
+
+def test_split_is_off_without_a_judge_or_when_asked():
+    assert SupportChecker(WordChecker()).split is False
+    j, seen = fake_judge([{"reason": "whole", "evidence": [], "verdict": "partly"}])
+    SupportChecker(None, j, split=False).assess(DENSE, [], "u", PAGE)
+    assert len(seen) == 1 and "CLAIM" in seen[0]["messages"][1]["content"]
+
+
+def test_a_checker_failure_is_flagged_not_fatal():
+    class Broken:
+        name = "broken"
+
+        def score(self, pairs):
+            raise RuntimeError("device lost")
+    s = SupportChecker(Broken()).assess("Recordings are kept for 30 days.", [], "u", PAGE)
+    assert s.verdict == "not_checked" and "checker model failed" in s.flag
+    j, _ = fake_judge([{"reason": "r", "evidence": [2], "verdict": "supported"}])
+    s = SupportChecker(Broken(), j).assess("Recordings are kept for 30 days.", [], "u", PAGE)
+    assert s.verdict == "supported" and "checker model failed" in s.flag
