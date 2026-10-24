@@ -74,8 +74,9 @@ class Fetcher:
             f.body_path = self._paths(url)[0]
         return f
 
-    def get(self, url: str) -> Fetched:
-        hit = self.cached(url)
+    def get(self, url: str, refresh: bool = False) -> Fetched:
+        """`refresh` skips the stored copy and fetches again (used to retry a failed request)."""
+        hit = None if refresh else self.cached(url)
         if hit is not None:
             return hit
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")

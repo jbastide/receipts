@@ -1,0 +1,75 @@
+name = "AI visibility measurement threads (Reddit study re-coded)"
+unit_label = "thread"
+instructions = """You are coding Reddit threads (a post and its comments) about AI search and SEO. Decide which fields apply anywhere in the thread, in the post or any comment. A field applies when someone describes or discusses that problem or claim; a passing keyword is not enough. A thread can have no fields, one or many. 'relevant' applies if the thread discusses measuring, tracking, reporting or attributing AI search or AI Overview visibility or traffic at all."""
+verify_instructions = """You check one code given to a Reddit thread about AI search and SEO. You see the start of the post and the comments the code was based on. Answer true only if someone in this text clearly raises the specific problem or claim the field describes, as more than a passing remark or a keyword. Answer false if it is only mentioned in passing, if it is a different problem, or if you are unsure."""
+items = "items.jsonl"
+gold = "gold.csv"
+calibration_ids = "calibration_ids.txt"
+min_kappa = 0.6
+chunk_words = 2500
+gate = "relevant"
+ungated = ["healthcare"]
+
+[[fields]]
+name = "NO_LLM_DATA"
+definition = """No first-party data from ChatGPT/Perplexity/Gemini/Claude etc.: no query or impression data, no "search console for ChatGPT", can't see what prompts people use, black box."""
+
+[[fields]]
+name = "GA4_ATTRIBUTION"
+definition = """Analytics/attribution problems: GA4 doesn't separate AI traffic, referrers stripped, AI visits land as direct/"dark" traffic, UTM issues, self-reported "how did you hear about us" used as a workaround, assisted conversions invisible."""
+
+[[fields]]
+name = "GSC_AI_DATA"
+definition = """Google Search Console and AI features: AI Overview / AI Mode impressions mixed into web search data, can't filter them, the new Generative AI report (June 2026), position/CTR distortion from AI Overviews in GSC."""
+
+[[fields]]
+name = "TRAFFIC_LOSS_DIAG"
+definition = """Hard to diagnose or prove that traffic/clicks fell because of AI Overviews/AI answers (impressions up, clicks down; zero-click; can't separate causes)."""
+
+[[fields]]
+name = "TOOL_COST_ACCURACY"
+definition = """AI-visibility tracking tools (Profound, Peec, Otterly, Semrush AI toolkit, Ahrefs Brand Radar, Scrunch, etc.): too expensive, inaccurate, disagree with each other, scrape the UI vs API differences, unclear methodology, vanity metrics."""
+
+[[fields]]
+name = "NONDETERMINISM"
+definition = """Answers change between runs, users, sessions, locations, logged-in state, personalization or model versions, so a single check isn't reproducible."""
+
+[[fields]]
+name = "REVENUE_ROI"
+definition = """Can't tie AI visibility/citations to leads, sales, revenue or ROI; proving business value."""
+
+[[fields]]
+name = "CLIENT_PRESSURE"
+definition = """Clients, bosses, CEOs or CMOs demand AI visibility, AEO reports or answers; explaining AI-caused drops to clients; agencies selling AEO reports."""
+
+[[fields]]
+name = "AEO_IS_SEO"
+definition = """Scepticism that AEO/GEO is different from SEO; "it's just SEO", rebrand, snake oil, grift."""
+
+[[fields]]
+name = "PROMPT_SELECTION"
+definition = """Prompt/query selection and representativeness: which prompts to track, how many prompts are enough, synthetic vs real user prompts, long-tail prompts, using keyword lists as prompts, "near me"/local queries and AI Overviews, AI visibility or sentiment audits built on a handful of prompts."""
+
+[[fields]]
+name = "FAN_OUT"
+definition = """Query fan-out (AI systems expanding one question into many sub-queries) and how it affects what to track or optimize."""
+
+[[fields]]
+name = "FORMAT_CLAIMS"
+definition = """Claims (or rebuttals of claims) that a particular content format gets AI citations: direct answers, FAQ, Q&A, answer-first paragraphs, lists/tables, FAQ schema."""
+
+[[fields]]
+name = "relevant"
+definition = """Applies if the thread discusses measuring, tracking, reporting or attributing AI search / AI Overview visibility or traffic at all (post or comments). false if it is off-topic (e.g. generic GSC indexing question that merely mentions AI)."""
+
+[[fields]]
+name = "healthcare"
+definition = """Applies if the thread is about a healthcare/medical/clinic/dental/pharma/therapy business or client (not just a passing word)."""
+
+[coders.gemma]
+url = "http://127.0.0.1:8197/v1"
+model = "gemma-4-12b-it-qat-q4_0"
+
+[coders.qwen]
+url = "http://127.0.0.1:8197/v1"
+model = "qwen3.5-9b"

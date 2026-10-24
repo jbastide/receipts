@@ -76,6 +76,70 @@ def cmd_check(a: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_study(a: argparse.Namespace) -> int:
+    from . import study as st
+    s = st.load_study(a.study)
+    if a.action == "collect":
+        from .collect import reddit_threads
+        ids = [l.strip() for l in open(a.reddit_ids, encoding="utf-8") if l.strip()]
+        items = reddit_threads(ids, Fetcher(a.cache), pause=a.pause, progress=_progress_label("collect"))
+        st.write_items(items, s.items_path)
+        units = sum(len(i["units"]) for i in items)
+        print(f"{len(items)} of {len(ids)} items, {units} units -> {s.items_path}")
+        return 0 if len(items) == len(ids) else 1
+    if a.action == "code":
+        cfg = s.coders.get(a.coder)
+        if not cfg:
+            sys.exit(f"no [coders.{a.coder}] in {a.study}")
+        coder = st.Coder(a.coder, cfg["url"], cfg.get("model", ""))
+        ids = None
+        if a.ids == "calibration":
+            ids = [l.strip() for l in open(s.calibration_ids_path, encoding="utf-8") if l.strip()]
+        elif a.ids:
+            ids = [l.strip() for l in open(a.ids, encoding="utf-8") if l.strip()]
+        path = st.code_study(s, coder, limit=a.limit, progress=_progress_label(f"code {a.coder}"), ids=ids, tag=a.tag)
+        rows = list(st.read_codes(path).values())
+        failed = sum(r["failed_chunks"] for r in rows)
+        dropped = sum(r["dropped_codes"] for r in rows)
+        print(f"{len(rows)} items coded by {a.coder}; {failed} chunks without a usable answer; "
+              f"{dropped} codes dropped for citing a unit not shown -> {path}")
+        return 0
+    if a.action == "verify":
+        cfg = s.coders.get(a.coder)
+        if not cfg or not a.source:
+            sys.exit("verify needs --coder NAME and --source CODES (e.g. gemma, or gemma-v1)")
+        coder = st.Coder(a.coder, cfg["url"], cfg.get("model", ""))
+        path = st.verify_study(s, coder, a.source, progress=_progress_label(f"verify {a.source}"))
+        rows = list(st.read_codes(path).values())
+        print(f"{len(rows)} items verified; {sum(r['verify_questions'] for r in rows)} codes checked, "
+              f"{sum(r['verify_rejected'] for r in rows)} rejected -> {path}")
+        return 0
+    if a.action == "calibrate":
+        for name in a.coders:
+            cal, held = st.calibrate(s, name)
+            print(f"\n{name}: kappa against gold (pass at {s.min_kappa} on {cal[0]['n']} calibration items; "
+                  f"held-out n={held[0]['n']})")
+            print(f"  {'field':22} {'calib.':>7} {'pass':>5} {'held-out':>9}")
+            for c, h in zip(cal, held):
+                k = lambda v: "-" if v is None else f"{v:.2f}"
+                print(f"  {c['field']:22} {k(c['kappa']):>7} {'yes' if c['passes'] else 'no':>5} {k(h['kappa']):>9}")
+        return 0
+    if a.action == "compare":
+        rows = st.compare(s, a.coders[0], a.coders[1])
+        print(f"{a.coders[0]} vs {a.coders[1]}, n={rows[0]['n'] if rows else 0}")
+        for r in rows:
+            print(f"  {r['field']:22} agree {r['agree_pct']:>5}%  kappa {'-' if r['kappa'] is None else r['kappa']}")
+        return 0
+    return 2
+
+
+def _progress_label(label: str):
+    def show(i: int, n: int):
+        if sys.stderr.isatty():
+            print(f"\r  {label}: {i}/{n}", end="" if i < n else "\n", file=sys.stderr, flush=True)
+    return show
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="receipts", description=__doc__)
     p.add_argument("--version", action="version", version=f"receipts {__version__}")
@@ -113,9 +177,25 @@ def main(argv: list[str] | None = None) -> int:
                         "(splitting needs --judge-url)")
     s.add_argument("--threshold", type=float, default=0.5,
                    help="checker score at or above which a claim counts as supported (default: %(default)s)")
+    t = sub.add_parser("study", help="code study items against a codebook with local models (step 3)",
+                       description="collect items, code them with a local model, measure each model "
+                                   "against gold labels, and compare two coders")
+    t.add_argument("action", choices=["collect", "code", "verify", "calibrate", "compare"])
+    t.add_argument("study", help="the study's TOML file")
+    t.add_argument("--coder", default="", help="code: which [coders.NAME] to use")
+    t.add_argument("--coders", nargs="+", default=[], help="calibrate: coder names; compare: exactly two")
+    t.add_argument("--limit", type=int, default=0, help="code: only the first N items")
+    t.add_argument("--ids", default="", help="code: only these items: a file of ids, or 'calibration'")
+    t.add_argument("--source", default="", help="verify: the codes to check, e.g. gemma or gemma-v1")
+    t.add_argument("--tag", default="", help="code: write codes-CODER-TAG.jsonl instead (trying a prompt)")
+    t.add_argument("--reddit-ids", default="", help="collect: a file with one Reddit thread id per line")
+    t.add_argument("--cache", default=default_cache(), help="collect: where fetched pages are kept")
+    t.add_argument("--pause", type=float, default=1.0, help="collect: seconds between live archive requests")
     a = p.parse_args(argv)
     if a.cmd == "check":
         return cmd_check(a)
+    if a.cmd == "study":
+        return cmd_study(a)
     return 2
 
 
