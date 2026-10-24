@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 *-check/
+
+# collected source text (e.g. Reddit comments) and review files that quote it: not republished
+bench/studies/*/items.jsonl
+bench/studies/*/out/review-*.csv
