@@ -196,3 +196,10 @@ def test_verify_rejects_proposed_codes_and_reapplies_the_gate(study):
     assert out["values"] == {"PRICE": True, "BUGS": False} and out["verify_rejected"] == 1 and len(asked) == 2
     study.gate = "BUGS"
     assert st.verify_item(study, v, ITEMS[0], row)["values"] == {"PRICE": False, "BUGS": False}
+
+
+def test_kappa_interval_is_wide_with_few_items_and_narrow_with_many():
+    few = st.kappa_ci([True, False] * 5, [True, False] * 4 + [False, True])
+    many = st.kappa_ci([True, False] * 200, [True, False] * 190 + [False, True] * 10)
+    assert few[0] < 0.4 < few[1]
+    assert many[1] - many[0] < few[1] - few[0] and many[0] > 0.8

@@ -286,6 +286,23 @@ def kappa(a: list[bool], b: list[bool]) -> float | None:
     return round((po - pe) / (1 - pe), 3)
 
 
+def kappa_ci(a: list[bool], b: list[bool], reps: int = 1000, seed: int = 7) -> tuple[float | None, float | None]:
+    """95% bootstrap interval for Cohen's kappa (resampling items); None when it cannot be estimated."""
+    import random
+    rnd, n, ks = random.Random(seed), len(a), []
+    if n < 2:
+        return None, None
+    for _ in range(reps):
+        idx = [rnd.randrange(n) for _ in range(n)]
+        k = kappa([a[i] for i in idx], [b[i] for i in idx])
+        if k is not None:
+            ks.append(k)
+    if len(ks) < reps // 2:
+        return None, None
+    ks.sort()
+    return round(ks[int(0.025 * len(ks))], 2), round(ks[int(0.975 * len(ks)) - 1], 2)
+
+
 def read_codes(path: str) -> dict[str, dict]:
     with open(path, encoding="utf-8") as fh:
         return {r["id"]: r for r in (json.loads(l) for l in fh if l.strip())}
@@ -301,9 +318,10 @@ def score(names, ids, a: dict, b: dict, a_key=lambda r, f: r["values"][f], b_key
     for f in names:
         x = [a_key(a[i], f) for i in ids]
         y = [b_key(b[i], f) for i in ids]
+        lo, hi = kappa_ci(x, y)
         rows.append({"field": f, "n": len(ids), "a_true": sum(x), "b_true": sum(y),
                      "agree_pct": round(100 * sum(p == q for p, q in zip(x, y)) / len(ids), 1) if ids else None,
-                     "kappa": kappa(x, y)})
+                     "kappa": kappa(x, y), "kappa_low": lo, "kappa_high": hi})
     return rows
 
 
@@ -317,6 +335,8 @@ def calibrate(s: Study, coder_name: str) -> tuple[list[dict], list[dict]]:
     on_cal = score(s.names, cal, codes, gold)
     for r in on_cal:
         r["passes"] = r["kappa"] is not None and r["kappa"] >= s.min_kappa
+        # "sure" only when the whole 95% interval clears the bar; with few items it rarely does
+        r["sure"] = r["kappa_low"] is not None and r["kappa_low"] >= s.min_kappa
     on_held = score(s.names, held, codes, gold)
     _write_csv(os.path.join(s.out, f"calibration-{coder_name}.csv"), on_cal)
     _write_csv(os.path.join(s.out, f"heldout-{coder_name}.csv"), on_held)

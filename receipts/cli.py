@@ -119,10 +119,13 @@ def cmd_study(a: argparse.Namespace) -> int:
             cal, held = st.calibrate(s, name)
             print(f"\n{name}: kappa against gold (pass at {s.min_kappa} on {cal[0]['n']} calibration items; "
                   f"held-out n={held[0]['n']})")
-            print(f"  {'field':22} {'calib.':>7} {'pass':>5} {'held-out':>9}")
+            print(f"  {'field':22} {'calibration (95% CI)':>22} {'pass':>5} {'held-out (95% CI)':>22}")
+            k = lambda v: "-" if v is None else f"{v:.2f}"
+            ci = lambda r: f"{k(r['kappa'])} ({k(r['kappa_low'])} to {k(r['kappa_high'])})"
             for c, h in zip(cal, held):
-                k = lambda v: "-" if v is None else f"{v:.2f}"
-                print(f"  {c['field']:22} {k(c['kappa']):>7} {'yes' if c['passes'] else 'no':>5} {k(h['kappa']):>9}")
+                verdict = ("yes" if c["sure"] else "yes?") if c["passes"] else "no"
+                print(f"  {c['field']:22} {ci(c):>22} {verdict:>5} {ci(h) if h['n'] else '-':>22}")
+            print("  yes? = passes, but the interval reaches below the bar: label more calibration items to be sure")
         return 0
     if a.action == "compare":
         rows = st.compare(s, a.coders[0], a.coders[1])
