@@ -7,3 +7,6 @@ __pycache__/
 # collected source text (e.g. Reddit comments) and review files that quote it: not republished
 bench/studies/*/items.jsonl
 bench/studies/*/out/review-*.csv
+
+# private notes live in the receipts-notes repository, never here
+private/
