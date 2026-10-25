@@ -1,39 +1,66 @@
 # receipts
 
-Check an AI research report before you forward it or publish it. `receipts check` reads a report
-from ChatGPT, Claude, Gemini, Perplexity or an open-source research agent, fetches every page it
-cites, keeps a copy of each, and tells you:
+Check an AI research report before you forward it or publish it. `receipts` reads a report from
+ChatGPT, Claude, Gemini, Perplexity or an open-source research agent, fetches every page it cites,
+keeps a copy of each, and tells you:
 
 - whether each quote is on the page it cites: **verbatim**, **elided** (has an ellipsis; every piece
   is on the page), **edited** (most of it is there, but trimmed, reworded or stitched), **missing**, or
-  **unreadable** (we couldn't see the page's text);
-- for edited and missing quotes, the nearest passage that *is* on the page;
+  **unreadable** (we couldn't see the page's text), with the nearest passage that *is* on the page;
 - whether each link works, and for dead links, whether the Wayback Machine ever captured them, which
   separates a page that moved from one that may never have existed;
-- with `--support`, whether the cited page supports each claim, quoted or not: **supported**,
+- with a local model, whether the cited page supports each claim, quoted or not: **supported**,
   **partly** or **not supported**, with the page sentences the verdict rests on.
 
 It runs on your machine. Nothing is sent anywhere except the requests to the cited pages and, for dead
 links, to the Wayback Machine. The quote and link checks use no model; the support check uses small
-models that run locally.
+models that you run locally (a 12B model on a 16 GB laptop is enough).
 
-Working name. Steps 1 and 2 of 6 in the design draft (`original-data-tool/DESIGN.md` on the
-`original-data-tool` branch of the tools repository).
+Made by [Copy for Originals](https://copyfororiginals.com). The benchmark is written up at
+[Can a laptop check an AI research report?](https://tools.copyfororiginals.com/can-a-laptop-check-ai-research/)
 
-## Install and run
+## Quickstart (two minutes, no model)
+
+You need [uv](https://docs.astral.sh/uv/) on macOS or Linux.
 
 ```
+git clone https://github.com/jbastide/receipts
+cd receipts
 uv sync
-uv run receipts check report.md
+uv run receipts check examples/agent-shopping-notes-2026-10-24.md
 ```
 
-Output goes to `report-check/`: `check.md` to read, `check.json` with everything, `check.csv` with
+That checks the quotes and links in real research notes we published (as they stood before we
+corrected them) and writes `agent-shopping-notes-2026-10-24-check/check.md`. It finds four quotes
+that are not on their cited pages, two dead links and one site that refuses requests. The expected
+output is in [`examples/agent-shopping-notes-2026-10-24.receipts/`](examples/agent-shopping-notes-2026-10-24.receipts/check.md).
+
+Then point it at your own report: `uv run receipts check my-report.md`.
+
+## Checking claim support with a local model
+
+Start any OpenAI-compatible model server: [llama.cpp](https://github.com/ggml-org/llama.cpp)'s
+`llama-server`, [Ollama](https://ollama.com), vLLM or LM Studio, with an instruction-tuned model of
+about 12B parameters or more. We tested Gemma 4 12B (4-bit). Then:
+
+```
+uv sync --extra support          # adds the small checker model's dependencies (torch, about 2 GB)
+uv run receipts check my-report.md --judge-url http://127.0.0.1:8080/v1
+```
+
+With llama.cpp, for example: `llama-server -m your-model.gguf --port 8080`. If the server hosts several
+models, add `--judge-model NAME`. The first run downloads the checker model from Hugging Face
+(MiniCheck, about 3 GB). Expect about ten seconds a claim on a laptop.
+
+## Output and options
+
+Output goes to `<report>-check/`: `check.md` to read, `check.json` with everything, `check.csv` with
 one row per quote. Fetched pages are kept in `~/.cache/receipts/pages` (change with `--cache`), so a
 second run reads the same copies; `--offline` uses only those.
 
 ```
-uv run receipts check runs/*.json -o checks/        # several reports at once
-uv run receipts check report.md --fail-on missing,edited,gone   # exit 1 if any, for scripts
+uv run receipts check runs/*.json -o checks/                          # several reports at once
+uv run receipts check report.md --fail-on missing,edited,gone,not_supported   # exit 1 if any
 ```
 
 ## What it reads
@@ -142,13 +169,36 @@ sentence. `--no-split` turns it off.
 On the same synthesis, 91 of 112 claims were split into 430 facts: 207 supported, 61 partly, 162 not
 supported. Claim-level verdicts became 27 supported, 76 partly, 7 not supported, 2 not checked: more
 "partly", because one weak fact now marks the claim, but each now names the fact. A sample of the
-unsupported facts held real discrepancies (a ratio given as 38,000:1 where the page says 48,000:1 and
-549:1; −0.405 where the page has 40.5%), the report author's own reasoning (a formula, "no study of X
-was found"), and figures the sentence search may not have shown the judge. On the planted set
+unsupported facts held real problems (a ratio of 38,000:1 cited to a page that gives 48,000:1 and
+549:1 for later months: the figure was right, the source wrong), the report author's own reasoning (a
+formula, "no study of X was found"), and figures the sentence search may not have shown the judge.
+A source-by-source review of all 141 flagged items found 36 wrong or unsupported. On the planted set
 splitting changes nothing measurable (94% caught either way; `bench/results/planted/`).
 
 On a Mac, the checker model runs on the CPU when a judge is used: sharing Apple's GPU with llama.cpp
 crashed PyTorch twice. `--checker-device` overrides it.
+
+## Coding studies against a codebook
+
+`receipts study` turns a question into a dataset the way our studies are built: collect items, code
+them against a codebook with a local model that cites the comment or sentence it relied on (never a
+quotation), check each proposed code with a narrow yes/no question, and measure each model per field
+against hand- or expert-labelled items before trusting it.
+
+```
+uv run receipts study collect study.toml --reddit-ids ids.txt    # Reddit threads from Arctic Shift
+uv run receipts study code study.toml --coder gemma
+uv run receipts study verify study.toml --coder gemma --source gemma
+uv run receipts study calibrate study.toml --coders gemma gemma-verified
+uv run receipts study compare study.toml --coders gemma-verified qwen-verified
+```
+
+`calibrate` reports Cohen's kappa per field with a 95% bootstrap interval, on a calibration set and on
+the held-out items. The worked example is [`bench/studies/reddit-aeo/`](bench/studies/reddit-aeo/):
+308 Reddit threads re-coded with Gemma 4 12B and Qwen3.5 9B against a published Claude coding, with
+results in [`bench/results/reddit-aeo/`](bench/results/reddit-aeo/README.md). In short: 5 of 14 fields
+reached kappa 0.6 on held-out threads, and 60 calibration items were too few to tell which ones in
+advance.
 
 ## What it does not do
 
@@ -166,4 +216,4 @@ The tests run offline against a fake web.
 
 ## Licence
 
-Not chosen yet.
+Apache License 2.0. See [LICENSE](LICENSE).

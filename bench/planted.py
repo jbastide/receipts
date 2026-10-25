@@ -12,9 +12,11 @@ damaged versions (each should be flagged):
 A method "catches" a defect when its verdict is anything but supported, and "false-alarms" when it
 flags an original.
 
-Usage:
-  uv run --extra support python bench/planted.py STUDY_DIR --cache DIR --out DIR \
-      [--n 80] [--methods minicheck,hhem] [--judge-url URL --judge-model NAME]
+Usage, rerunning the published cases (fetches the cited pages on first use):
+  uv run --extra support python bench/planted.py --cases bench/results/planted/cases.jsonl --out my-run \
+      [--methods minicheck,hhem] [--judge-url URL --judge-model NAME]
+Building new cases from the model study (tools repository, haiku-vs-sonnet-vs-opus-research-study):
+  uv run --extra support python bench/planted.py STUDY_DIR --out DIR [--n 80]
 Stages are saved to --out and resumed, so a long judge run can be stopped and restarted.
 """
 import argparse
@@ -174,8 +176,11 @@ def combine(a, b):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("study")
-    ap.add_argument("--cache", required=True)
+    ap.add_argument("study", nargs="?", default="",
+                    help="the model study folder (only to build new cases; not needed with --cases)")
+    ap.add_argument("--cases", default="", help="start from an existing cases.jsonl, e.g. bench/results/planted/cases.jsonl")
+    ap.add_argument("--cache", default=os.path.expanduser("~/.cache/receipts/pages"))
+    ap.add_argument("--offline", action="store_true", help="use only pages already in the cache")
     ap.add_argument("--out", required=True)
     ap.add_argument("--n", type=int, default=80)
     ap.add_argument("--methods", default="minicheck,hhem")
@@ -185,9 +190,12 @@ def main():
     ap.add_argument("--reuse", default="", help="earlier judge scores (no split) to copy for claims too short to split")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    fetcher = Fetcher(a.cache, offline=True)
+    fetcher = Fetcher(a.cache, offline=a.offline)
 
     cpath = os.path.join(a.out, "cases.jsonl")
+    if a.cases and not os.path.exists(cpath):
+        with open(a.cases, encoding="utf-8") as src, open(cpath, "w", encoding="utf-8") as dst:
+            dst.write(src.read())
     if os.path.exists(cpath):
         cases = [json.loads(l) for l in open(cpath, encoding="utf-8")]
     else:
