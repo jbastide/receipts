@@ -32,7 +32,7 @@ chosen by calibration kappa only, and its held-out kappa is reported.
   FAN_OUT 0.66, FORMAT_CLAIMS 0.66, NONDETERMINISM 0.61. The others run 0.33 to 0.60. The published
   Sonnet–Opus agreement was 0.65 to 0.91.
 - **Verification helps a generous coder and hurts a cautious one.** Gemma proposed 1,532 codes and
-  verification rejected 506; it raised Gemma's held-out kappa on 13 of 14 fields. Qwen proposed 906
+  verification rejected 506; it raised Gemma's held-out kappa on 14 of 14 fields. Qwen proposed 906
   and verification rejected 486, lowering most fields (TOOL_COST_ACCURACY 0.59 to 0.13).
 - **The two local models agree with each other less than with the gold** (Gemma+verify vs Qwen+verify:
   kappa 0.18 to 0.58), so two-model agreement alone would not have found the good fields.
