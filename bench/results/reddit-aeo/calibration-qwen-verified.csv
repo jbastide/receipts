@@ -1,0 +1,15 @@
+field,n,a_true,b_true,agree_pct,kappa,kappa_low,kappa_high,passes,sure
+NO_LLM_DATA,60,0,4,93.3,0.0,0.0,0.0,False,False
+GA4_ATTRIBUTION,60,1,4,91.7,-0.027,-0.06,0.0,False,False
+GSC_AI_DATA,60,5,12,88.3,0.533,0.22,0.78,False,False
+TRAFFIC_LOSS_DIAG,60,3,5,93.3,0.467,-0.03,0.88,False,False
+TOOL_COST_ACCURACY,60,1,9,86.7,0.175,0.0,0.49,False,False
+NONDETERMINISM,60,4,7,95.0,0.702,0.27,1.0,True,False
+REVENUE_ROI,60,1,3,96.7,0.487,0.0,1.0,False,False
+CLIENT_PRESSURE,60,4,7,91.7,0.503,0.0,0.85,False,False
+AEO_IS_SEO,60,3,9,90.0,0.459,0.0,0.78,False,False
+PROMPT_SELECTION,60,3,7,90.0,0.355,-0.05,0.71,False,False
+FAN_OUT,60,1,8,88.3,0.198,0.0,0.55,False,False
+FORMAT_CLAIMS,60,6,12,90.0,0.615,0.27,0.86,True,False
+relevant,60,21,31,73.3,0.472,0.26,0.67,False,False
+healthcare,60,3,2,98.3,0.792,0.0,1.0,True,False
